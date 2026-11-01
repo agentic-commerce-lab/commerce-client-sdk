@@ -28,7 +28,7 @@ class SignatureTests(unittest.TestCase):
             for language in ('python','typescript'):
                 for body in (None,'{"label":"Kaffee ☕"}'):
                     with self.subTest(algorithm=algorithm,language=language,body=body):
-                        p=PreparedRequest('create_cart' if body else 'get_cart','POST' if body else 'GET','https://merchant.example/api/v2/carts/order%2F42',body,{'ucp-agent':'profile="https://agent.example/profile.json"',**({'idempotency-key':'repeat-key'} if body else {})},'repeat-key' if body else None)
+                        p=PreparedRequest('create_cart' if body else 'get_cart','POST' if body else 'GET','https://merchant.example/api/v2/carts/order%2F42',body,{'ucp-agent':'profile="https://agent.example/profile.json"',**({'content-type':'application/json','idempotency-key':'repeat-key'} if body else {})},'repeat-key' if body else None)
                         if language=='python':signed=create_signer(key_id='test-key',private_key=pem)(p)
                         else:
                             wire=asdict(p);wire['idempotencyKey']=wire.pop('idempotency_key')
@@ -38,10 +38,17 @@ class SignatureTests(unittest.TestCase):
                         verifier=HTTPMessageVerifier(signature_algorithm=algorithm,key_resolver=Resolver(key.public_key()))
                         verified=verifier.verify(request,max_age=timedelta(minutes=5))
                         self.assertEqual(verified[0].parameters['keyid'],'test-key')
-                        self.assertIn('"ucp-agent"',verified[0].covered_components)
+                        self.assertNotIn('alg',verified[0].parameters)
+                        # The covered components a UCP 2026-08-25 verifier requires for this request
+                        required=['"@method"','"@authority"','"@path"','"ucp-agent"']+(['"idempotency-key"','"content-digest"','"content-type"'] if body else [])
+                        self.assertEqual([name for name in verified[0].covered_components if name!='"@signature-params"'],required)
+                        self.assertEqual(verified[0].covered_components['"@authority"'],'merchant.example')
+                        self.assertEqual(verified[0].covered_components['"@path"'],'/api/v2/carts/order%2F42')
                         if body:
                             self.assertEqual(signed['content-digest'],'sha-256=:'+base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()+':')
-                            self.assertIn('"idempotency-key"',verified[0].covered_components)
+                            request.headers['content-type']='text/plain'
+                            with self.assertRaises(Exception):verifier.verify(request)
+                            request.headers['content-type']='application/json'
                         request.url='https://merchant.example/other'
                         with self.assertRaises(Exception):verifier.verify(request)
 
